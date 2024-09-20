@@ -1,37 +1,19 @@
-use rayon::prelude::*;
+mod image_buffer_conversions;
+
 use regex::Regex;
-use std::env;
-use std::fs;
+use std::{env, fs, io};
 use std::fs::File;
-use std::io;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command};
 use walkdir::WalkDir;
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 use zip::CompressionMethod::Stored;
 use zip::ZipWriter;
-
-fn copy_directory(src: &str, dest: &str) -> io::Result<()> {
-    for entry in WalkDir::new(src) {
-        let entry = entry?;
-        let path = entry.path();
-        let relative_path = path.strip_prefix(src).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to strip prefix: {:?}", e),
-            )
-        })?;
-
-        let dest_path = Path::new(dest).join(relative_path);
-
-        if path.is_dir() {
-            fs::create_dir_all(&dest_path)?;
-        } else {
-            fs::copy(&path, &dest_path)?;
-        }
-    }
-    Ok(())
-}
+use exif;
+use exif::{In, Tag};
+use image::{DynamicImage, GenericImageView};
+use image::imageops::{rotate90};
+use crate::image_buffer_conversions::ImageBufferConversions;
 
 fn zip_directory(src_dir: &str, dest_file: &str) -> io::Result<()> {
     let path = Path::new(src_dir);
@@ -40,7 +22,7 @@ fn zip_directory(src_dir: &str, dest_file: &str) -> io::Result<()> {
     let it = walkdir.into_iter();
 
     let mut zip = ZipWriter::new(file);
-    let options = FileOptions::default()
+    let options = SimpleFileOptions::default()
         .compression_method(Stored) // 0: no compression
         .unix_permissions(0o755);
 
@@ -86,15 +68,19 @@ fn gather_image_paths(directory: &str) -> Vec<(String, String, u32)> {
         if let Ok(entry) = entry {
             let path = entry.path();
             if path.is_dir() {
-                let path_string = path.to_str().unwrap();
-                let (_, last_folder) = path_string.rsplit_once('/').unwrap();
+                match path.to_str() {
+                    None => {}
+                    Some(path_string) => {
+                        let (_, last_folder) = path_string.rsplit_once(std::path::MAIN_SEPARATOR).unwrap();
 
-                if !["default", "20", "200", "400", "600", "800", "1000", "1200"]
-                    .contains(&last_folder)
-                {
-                    let mut sub_paths = gather_image_paths(&path.to_string_lossy());
-                    file_paths.append(&mut sub_paths);
-                };
+                        if !["default", "20", "200", "400", "600", "800", "1000", "1200"]
+                            .contains(&last_folder)
+                        {
+                            let mut sub_paths = gather_image_paths(&path.to_string_lossy());
+                            file_paths.append(&mut sub_paths);
+                        };
+                    }
+                }
             } else if let Some(extension) = path.extension() {
                 if let Some(extension_str) = extension.to_str() {
                     if extension_str.eq_ignore_ascii_case("jpg")
@@ -128,6 +114,20 @@ fn gather_image_paths(directory: &str) -> Vec<(String, String, u32)> {
                         let re = Regex::new(pattern).unwrap();
 
                         if !re.is_match(&file_name_cleaned) {
+                            let exif_read_result = fix_rotation(
+                                format!(
+                                    "{}/{}.{}",
+                                    directory,
+                                    file_name_cleaned,
+                                    extension_str.to_lowercase()
+                                ).as_str()
+                            );
+
+                            match exif_read_result {
+                                Ok(_) => {},
+                                Err(_) => eprintln!("reading exif data failed for {}", file_name_cleaned)
+                            }
+
                             for width in [20, 200, 400, 600, 800, 1000, 1200].iter() {
                                 let w = width.to_string();
                                 let output_directory = format!("{}/{}", directory, w);
@@ -165,16 +165,47 @@ fn gather_image_paths(directory: &str) -> Vec<(String, String, u32)> {
     file_paths
 }
 
-// Function to autorotate an image using exiftran
-fn auto_rotate_image(filename: &str) -> Result<(), std::io::Error> {
-    // Execute jpegtran command to auto-rotate the image in-place
-    Command::new("exiftran").arg("-ai").arg(filename).output()?;
+fn rotate(filename: &str) {
+    let dyn_img = image::open(filename).unwrap();
+    let image_buffer = dyn_img.to_image_buffer();
+
+    match image_buffer {
+        Some(buffer) => {
+            let rotated_image = rotate90(&buffer);
+            let rgb_image = DynamicImage::ImageRgba8(rotated_image).to_rgb8(); // conversion needed because jpg doesn't have a channel
+
+            rgb_image.save(format!("{}rotated.jpg", filename)).expect("unable to save rotated image");
+        }
+        ,
+        None => println!("reading image to image buffer failed for {}", filename)
+    }
+}
+
+fn fix_rotation(filename: &str) -> Result<(), exif::Error> {
+    let file = File::open(filename)?;
+    let mut bufreader = std::io::BufReader::new(&file);
+    let exifreader = exif::Reader::new();
+    let exif = exifreader.read_from_container(&mut bufreader)?;
+
+    match exif.get_field(Tag::Orientation, In::PRIMARY) {
+        Some(orientation) =>
+            match orientation.value.get_uint(0) {
+                Some(v @ 6) => {
+                    println!("rotating {}", filename);
+                    rotate(filename);
+                },
+                Some(v @ 1..=8) => println!("Orientation {}", v),
+                _ => eprintln!("Orientation value is broken"),
+            },
+        None => eprintln!("Orientation tag is missing"),
+    }
+
     Ok(())
 }
 
 fn process_files(files: Vec<(String, String, u32)>) {
-    files.par_iter().for_each(|(input, output, int_value)| {
-        auto_rotate_image(&input);
+    files.iter().for_each(|(input, output, int_value)| {
+
         // Replace with your actual processing function
         if let Some(parent) = Path::new(output).parent() {
             if !parent.exists() {
@@ -197,28 +228,12 @@ fn main() {
     }
 
     let directory = &args[1];
-
-    // Specify the source directory and destination directory
-    let src_dir = "/Users/jonasfaber/Library/CloudStorage/GoogleDrive-jonas@hagenfaber.eu/.shortcut-targets-by-id/1W5yfM9fIlw09ul_aDfgAA0Kj0gJsUg1r/STRUCTURE_EXAMPLE";
-    let dest_dir = "./images";
-
-    // Call the copy_directory function
-    match copy_directory(src_dir, dest_dir) {
-        Ok(_) => println!("Directory copied successfully."),
-        Err(e) => eprintln!("Error copying directory: {}", e),
-    }
-
     let dest_file = "images.zip";
 
-    // Autorotate images using exiftran in the specified directory
-    // autorotate_images_exiftran(directory);
-
-    // Resize images using ffmpeg in the specified directory
-    // resize_images_ffmpeg(directory);
     let images = gather_image_paths(directory);
     process_files(images);
 
-    match zip_directory(dest_dir, dest_file) {
+    match zip_directory(directory, dest_file) {
         Ok(_) => println!("Zipped directory successfully."),
         Err(e) => eprintln!("Error zipping directory: {}", e),
     }
