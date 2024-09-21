@@ -1,4 +1,5 @@
 mod image_buffer_conversions;
+mod exif_rotation;
 
 use regex::Regex;
 use std::{env, fs, io};
@@ -10,10 +11,12 @@ use zip::write::SimpleFileOptions;
 use zip::CompressionMethod::Stored;
 use zip::ZipWriter;
 use exif;
-use exif::{In, Tag};
-use image::{DynamicImage, GenericImageView};
-use image::imageops::{rotate90};
+use exif::{Error, Exif, In, Tag};
+use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
+use crate::exif_rotation::ExifRotation;
 use crate::image_buffer_conversions::ImageBufferConversions;
+
+// [20, 200, 400, 600, 800, 1000, 1200] // to speedup testing
 
 fn zip_directory(src_dir: &str, dest_file: &str) -> io::Result<()> {
     let path = Path::new(src_dir);
@@ -73,7 +76,7 @@ fn gather_image_paths(directory: &str) -> Vec<(String, String, u32)> {
                     Some(path_string) => {
                         let (_, last_folder) = path_string.rsplit_once(std::path::MAIN_SEPARATOR).unwrap();
 
-                        if !["default", "20", "200", "400", "600", "800", "1000", "1200"]
+                        if !["default", "1200"]
                             .contains(&last_folder)
                         {
                             let mut sub_paths = gather_image_paths(&path.to_string_lossy());
@@ -128,7 +131,7 @@ fn gather_image_paths(directory: &str) -> Vec<(String, String, u32)> {
                                 Err(_) => eprintln!("reading exif data failed for {}", file_name_cleaned)
                             }
 
-                            for width in [20, 200, 400, 600, 800, 1000, 1200].iter() {
+                            for width in [1200].iter() {
                                 let w = width.to_string();
                                 let output_directory = format!("{}/{}", directory, w);
                                 let output_file = format!(
@@ -165,43 +168,71 @@ fn gather_image_paths(directory: &str) -> Vec<(String, String, u32)> {
     file_paths
 }
 
-fn rotate(filename: &str) {
+fn read_image_to_buffer(filename: &str) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     let dyn_img = image::open(filename).unwrap();
-    let image_buffer = dyn_img.to_image_buffer();
+    dyn_img.to_image_buffer()
+}
 
-    match image_buffer {
-        Some(buffer) => {
-            let rotated_image = rotate90(&buffer);
-            let rgb_image = DynamicImage::ImageRgba8(rotated_image).to_rgb8(); // conversion needed because jpg doesn't have a channel
+fn read_exif_data_from_file(filename: &str) -> Result<Exif, Error> {
+    let file = File::open(filename)?;
+    let mut bufreader = std::io::BufReader::new(&file);
+    let exif_reader = exif::Reader::new();
+    exif_reader.read_from_container(&mut bufreader)
+}
 
-            rgb_image.save(format!("{}rotated.jpg", filename)).expect("unable to save rotated image");
+fn read_rotation(exif_data: Exif) -> ExifRotation {
+    match exif_data.get_field(Tag::Orientation, In::PRIMARY) {
+        Some(orientation) =>
+            match orientation.value.get_uint(0) {
+                Some(v @ 1..=8) => {
+                    let exif_rotation_result = ExifRotation::try_from(v);
+                    match exif_rotation_result {
+                        Ok(exif_rotation) => { exif_rotation },
+                        _ => {
+                            eprintln!("Invalid exif rotation value, implying correct orientation");
+                            ExifRotation::Upright
+                        }
+                    }
+                }
+                _ => {
+                        eprintln!("Orientation value is broken, implying correct orientation");
+                        ExifRotation::Upright
+                    },
+            },
+        _ => {
+            eprintln!("reading orientation tag failed, implying correct orientation");
+            ExifRotation::Upright
         }
-        ,
-        None => println!("reading image to image buffer failed for {}", filename)
     }
 }
 
-fn fix_rotation(filename: &str) -> Result<(), exif::Error> {
-    let file = File::open(filename)?;
-    let mut bufreader = std::io::BufReader::new(&file);
-    let exifreader = exif::Reader::new();
-    let exif = exifreader.read_from_container(&mut bufreader)?;
 
-    match exif.get_field(Tag::Orientation, In::PRIMARY) {
-        Some(orientation) =>
-            match orientation.value.get_uint(0) {
-                Some(v @ 6) => {
-                    println!("rotating {}", filename);
-                    rotate(filename);
-                },
-                Some(v @ 1..=8) => println!("Orientation {}", v),
-                _ => eprintln!("Orientation value is broken"),
-            },
-        None => eprintln!("Orientation tag is missing"),
+fn fix_rotation(filename: &str) -> Result<(), exif::Error> {
+    let exif_result = read_exif_data_from_file(filename);
+
+    match exif_result {
+        Ok(exif_data) => {
+            let rotation = read_rotation(exif_data);
+            if rotation == ExifRotation::Upright {
+                return Ok(());
+            }
+            let mut image_buffer_option = read_image_to_buffer(&filename);
+            match image_buffer_option {
+                None => {eprintln!("Reading image to buffer failed")}
+                Some(image_buffer) => {
+                    let rotated_image = rotation.apply(image_buffer);
+
+                    let rgb_image = DynamicImage::ImageRgba8(rotated_image).to_rgb8(); // conversion needed because jpg doesn't have a channel
+                    rgb_image.save(format!("{}rotated{:?}.jpg", filename, rotation)).expect("unable to save rotated image");
+                }
+            }
+        },
+        _ => eprintln!("Reading exif data failed")
     }
 
     Ok(())
 }
+
 
 fn process_files(files: Vec<(String, String, u32)>) {
     files.iter().for_each(|(input, output, int_value)| {
