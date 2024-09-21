@@ -1,3 +1,4 @@
+use exif::{Exif, In, Tag};
 use image::{ImageBuffer, Rgba};
 use image::imageops::{flip_horizontal, flip_vertical, rotate180, rotate270, rotate90};
 
@@ -40,4 +41,31 @@ impl ExifRotation {
             ExifRotation::Rotated90CW => {rotate270(&image_buffer)}
         }
     }
+
+    pub fn read_rotation_from_exif(exif_data: Exif) -> ExifRotation {
+        match exif_data.get_field(Tag::Orientation, In::PRIMARY) {
+            Some(orientation) =>
+                match orientation.value.get_uint(0) {
+                    Some(v @ 1..=8) => {
+                        let exif_rotation_result = ExifRotation::try_from(v);
+                        match exif_rotation_result {
+                            Ok(exif_rotation) => { exif_rotation },
+                            _ => {
+                                eprintln!("Invalid exif rotation value, implying correct orientation");
+                                ExifRotation::Upright
+                            }
+                        }
+                    }
+                    _ => {
+                        eprintln!("Orientation value is broken, implying correct orientation");
+                        ExifRotation::Upright
+                    },
+                },
+            _ => {
+                eprintln!("reading orientation tag failed, implying correct orientation");
+                ExifRotation::Upright
+            }
+        }
+    }
+
 }

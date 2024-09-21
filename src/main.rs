@@ -11,7 +11,7 @@ use zip::write::SimpleFileOptions;
 use zip::CompressionMethod::Stored;
 use zip::ZipWriter;
 use exif;
-use exif::{Error, Exif, In, Tag};
+use exif::{Error, Exif};
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use crate::exif_rotation::ExifRotation;
 use crate::image_buffer_conversions::ImageBufferConversions;
@@ -117,7 +117,7 @@ fn gather_image_paths(directory: &str) -> Vec<(String, String, u32)> {
                         let re = Regex::new(pattern).unwrap();
 
                         if !re.is_match(&file_name_cleaned) {
-                            let exif_read_result = fix_rotation(
+                            fix_rotation(
                                 format!(
                                     "{}/{}.{}",
                                     directory,
@@ -125,11 +125,6 @@ fn gather_image_paths(directory: &str) -> Vec<(String, String, u32)> {
                                     extension_str.to_lowercase()
                                 ).as_str()
                             );
-
-                            match exif_read_result {
-                                Ok(_) => {},
-                                Err(_) => eprintln!("reading exif data failed for {}", file_name_cleaned)
-                            }
 
                             for width in [1200].iter() {
                                 let w = width.to_string();
@@ -180,41 +175,14 @@ fn read_exif_data_from_file(filename: &str) -> Result<Exif, Error> {
     exif_reader.read_from_container(&mut bufreader)
 }
 
-fn read_rotation(exif_data: Exif) -> ExifRotation {
-    match exif_data.get_field(Tag::Orientation, In::PRIMARY) {
-        Some(orientation) =>
-            match orientation.value.get_uint(0) {
-                Some(v @ 1..=8) => {
-                    let exif_rotation_result = ExifRotation::try_from(v);
-                    match exif_rotation_result {
-                        Ok(exif_rotation) => { exif_rotation },
-                        _ => {
-                            eprintln!("Invalid exif rotation value, implying correct orientation");
-                            ExifRotation::Upright
-                        }
-                    }
-                }
-                _ => {
-                        eprintln!("Orientation value is broken, implying correct orientation");
-                        ExifRotation::Upright
-                    },
-            },
-        _ => {
-            eprintln!("reading orientation tag failed, implying correct orientation");
-            ExifRotation::Upright
-        }
-    }
-}
-
-
-fn fix_rotation(filename: &str) -> Result<(), exif::Error> {
+fn fix_rotation(filename: &str) {
     let exif_result = read_exif_data_from_file(filename);
 
     match exif_result {
         Ok(exif_data) => {
-            let rotation = read_rotation(exif_data);
+            let rotation = ExifRotation::read_rotation_from_exif(exif_data);
             if rotation == ExifRotation::Upright {
-                return Ok(());
+                return;
             }
             let mut image_buffer_option = read_image_to_buffer(&filename);
             match image_buffer_option {
@@ -227,10 +195,9 @@ fn fix_rotation(filename: &str) -> Result<(), exif::Error> {
                 }
             }
         },
-        _ => eprintln!("Reading exif data failed")
+        Err(err) => eprintln!("Reading exif data failed: {err}")
     }
 
-    Ok(())
 }
 
 
