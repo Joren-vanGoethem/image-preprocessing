@@ -54,7 +54,7 @@ fn resize_image(image: &DynamicImage, width: u32, height: u32) -> ImageBuffer<Rg
 }
 
 fn is_supported_extension(extension_str: &str) -> bool {
-    // TODO: check if exists in string array
+    // TODO: check if exists in string array, cleaner solution
     extension_str.eq_ignore_ascii_case("jpg")
         || extension_str.eq_ignore_ascii_case("jpeg")
         || extension_str.eq_ignore_ascii_case("png")

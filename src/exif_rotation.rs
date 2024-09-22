@@ -78,7 +78,6 @@ pub fn fix_rotation(filename: &str) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     match exif_result {
         Ok(exif_data) => {
             let rotation = ExifRotation::read_rotation_from_exif(exif_data);
-            // TODO: uncomment to skip correct images
             if rotation == ExifRotation::Upright {
                 return None;
             }
