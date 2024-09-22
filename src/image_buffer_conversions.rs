@@ -12,3 +12,12 @@ impl ImageBufferConversions for DynamicImage {
         ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(w, h, image_bytes.to_vec())
     }
 }
+
+pub fn read_image_to_buffer(filename: &str) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let dyn_img = image::open(filename);
+
+    match dyn_img {
+        Ok(img) => img.to_image_buffer(),
+        _ => None
+    }
+}

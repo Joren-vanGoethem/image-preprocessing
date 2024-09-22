@@ -1,6 +1,9 @@
-use exif::{Exif, In, Tag};
+use std::fs::File;
+use std::io;
+use exif::{Error, Exif, In, Tag};
 use image::{ImageBuffer, Rgba};
 use image::imageops::{flip_horizontal, flip_vertical, rotate180, rotate270, rotate90};
+use crate::image_buffer_conversions::read_image_to_buffer;
 
 // vertical flips could also be user for number 4, but this keeps the logic simple, rotate if needed, then flip if needed
 #[repr(u32)]
@@ -51,21 +54,51 @@ impl ExifRotation {
                         match exif_rotation_result {
                             Ok(exif_rotation) => { exif_rotation },
                             _ => {
-                                eprintln!("Invalid exif rotation value, implying correct orientation");
+                                eprintln!("Invalid exif rotation value, assuming correct orientation");
                                 ExifRotation::Upright
                             }
                         }
                     }
                     _ => {
-                        eprintln!("Orientation value is broken, implying correct orientation");
+                        eprintln!("Orientation value is broken, assuming correct orientation");
                         ExifRotation::Upright
                     },
                 },
             _ => {
-                eprintln!("reading orientation tag failed, implying correct orientation");
+                eprintln!("reading orientation tag failed, assuming correct orientation");
                 ExifRotation::Upright
             }
         }
     }
+}
 
+pub fn fix_rotation(filename: &str) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let exif_result = read_exif_data_from_file(filename);
+
+    match exif_result {
+        Ok(exif_data) => {
+            let rotation = ExifRotation::read_rotation_from_exif(exif_data);
+            // TODO: uncomment to skip correct images
+            if rotation == ExifRotation::Upright {
+                return None;
+            }
+
+            let mut image_buffer_option = read_image_to_buffer(&filename);
+            match image_buffer_option {
+                None => None,
+                Some(image_buffer) => Some(rotation.apply(image_buffer))
+            }
+        },
+        Err(err) => {
+            eprintln!("Reading exif data failed: {err} {filename}");
+            None
+        }
+    }
+}
+
+fn read_exif_data_from_file(filename: &str) -> Result<Exif, Error> {
+    let file = File::open(filename)?;
+    let mut bufreader = io::BufReader::new(&file);
+    let exif_reader = exif::Reader::new();
+    exif_reader.read_from_container(&mut bufreader)
 }
