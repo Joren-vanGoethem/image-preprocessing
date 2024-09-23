@@ -24,7 +24,7 @@ impl TryFrom<u32> for ExifRotation {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         if (1..=8).contains(&value) {
-            Ok(unsafe { std::mem::transmute(value) })
+            Ok(unsafe { std::mem::transmute::<u32, ExifRotation>(value) })
         } else {
             Err("only values 1 to 8 are supported")
         }
@@ -46,28 +46,20 @@ impl ExifRotation {
     }
 
     pub fn read_rotation_from_exif(exif_data: Exif) -> ExifRotation {
-        match exif_data.get_field(Tag::Orientation, In::PRIMARY) {
-            Some(orientation) =>
-                match orientation.value.get_uint(0) {
-                    Some(v @ 1..=8) => {
-                        let exif_rotation_result = ExifRotation::try_from(v);
-                        match exif_rotation_result {
-                            Ok(exif_rotation) => { exif_rotation },
-                            _ => {
-                                eprintln!("Invalid exif rotation value, assuming correct orientation");
-                                ExifRotation::Upright
-                            }
-                        }
-                    }
-                    _ => {
-                        eprintln!("Orientation value is broken, assuming correct orientation");
-                        ExifRotation::Upright
-                    },
-                },
-            _ => {
-                eprintln!("reading orientation tag failed, assuming correct orientation");
+        if let Some(orientation) = exif_data.get_field(Tag::Orientation, In::PRIMARY) { 
+            if let Some(v @ 1..=8) = orientation.value.get_uint(0) {
+                let exif_rotation_result = ExifRotation::try_from(v);
+                if let Ok(exif_rotation) = exif_rotation_result { exif_rotation } else {
+                    eprintln!("Invalid exif rotation value, assuming correct orientation");
+                    ExifRotation::Upright
+                }
+            } else {
+                eprintln!("Orientation value is broken, assuming correct orientation");
                 ExifRotation::Upright
-            }
+            } 
+        } else {
+            eprintln!("reading orientation tag failed, assuming correct orientation");
+            ExifRotation::Upright
         }
     }
 }
@@ -82,11 +74,8 @@ pub fn fix_rotation(filename: &str) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
                 return None;
             }
 
-            let mut image_buffer_option = read_image_to_buffer(&filename);
-            match image_buffer_option {
-                None => None,
-                Some(image_buffer) => Some(rotation.apply(image_buffer))
-            }
+            let image_buffer_option = read_image_to_buffer(filename);
+            image_buffer_option.map(|image_buffer| rotation.apply(image_buffer))
         },
         Err(err) => {
             eprintln!("Reading exif data failed: {err} {filename}");

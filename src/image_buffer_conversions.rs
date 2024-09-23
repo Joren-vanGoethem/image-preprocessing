@@ -9,7 +9,7 @@ impl ImageBufferConversions for DynamicImage {
         let (w,h) = self.dimensions();
         let rgba_image = self.to_rgba8();
         let image_bytes = rgba_image.as_raw();
-        ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(w, h, image_bytes.to_vec())
+        ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(w, h, image_bytes.clone()) // TODO: why is clone required here?
     }
 }
 
