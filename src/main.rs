@@ -5,6 +5,7 @@ use regex::Regex;
 use std::{env, fs, io};
 use std::ffi::OsStr;
 use std::fs::File;
+use std::io::BufRead;
 use std::path::Path;
 use walkdir::{WalkDir};
 use zip::write::SimpleFileOptions;
@@ -79,18 +80,16 @@ fn get_image_paths(dir: &str) -> Vec<String> {
         .map(|s| s.as_str())
         .collect();
 
-
-    let pattern = r".*-\d{2,4}$";
-    let re = Regex::new(pattern).unwrap();
-
     for entry in entries {
         if let Ok(entry) = entry {
+            // println!("entry: {:?}", entry);
             let path = entry.path();
             if path.is_dir() {
                 match path.to_str() {
                     None => {}
                     Some(path_string) => {
                         let (_, last_folder) = path_string.rsplit_once(std::path::MAIN_SEPARATOR).unwrap();
+                        // println!("last_folder: {:?}", last_folder);
 
                         if !quality_presets_slices
                             .contains(&last_folder)
@@ -103,15 +102,8 @@ fn get_image_paths(dir: &str) -> Vec<String> {
             } else if let Some(extension_str) = path.extension().and_then(OsStr::to_str) {
                 if is_supported_extension(extension_str)
                 {
-                    let file_name = path.file_stem().expect("Failed to get file stem");
-                    let file_name_str = file_name.to_string_lossy();
-                    let file_name_cleaned = file_name_str
-                        .trim_matches(|c: char| !c.is_alphanumeric())
-                        .to_string();
-
-                    if !re.is_match(&file_name_cleaned) {
-                        file_paths.push(path.to_str().unwrap().to_string());
-                    }
+                    // TODO: are these checks actually useful? we read files from filesystem, i expect them to be valid file names
+                    file_paths.push(path.to_str().unwrap().to_string());
                 }
             }
         }
@@ -120,25 +112,39 @@ fn get_image_paths(dir: &str) -> Vec<String> {
     file_paths
 }
 
-fn save_image(image: ImageBuffer<Rgba<u8>, Vec<u8>>, path: String) {
-    let extension = Path::new(&path).extension().and_then(OsStr::to_str);
+fn create_dir(dir: &String) {
+    if !Path::new(dir).is_dir() {
+        fs::create_dir_all(dir).expect(&format!("creating new dir {} failed", dir));
+    }
+}
+
+fn save_image(image: ImageBuffer<Rgba<u8>, Vec<u8>>, original_file_path: String, output_directory: &str) {
+    // TODO: cleanup this mess
+    let system_path = Path::new(&original_file_path);
+    let extension = system_path.extension().and_then(OsStr::to_str);
+    let file_name = system_path.file_stem().and_then(OsStr::to_str).unwrap();
+    let directory = original_file_path.rsplit_once(file_name).unwrap().0.split_once(std::path::MAIN_SEPARATOR).unwrap().1;
+
+    println!("file_name: {:?}", file_name);
+    println!("extension: {:?}", extension);
+    println!("directory: {:?}", directory);
+
     let dyn_img = DynamicImage::ImageRgba8(image);
 
     if let Some(ext) = extension {
         let mut result  = Ok(());
 
+        let file_output_path = &format!("{}{}{}{}", output_directory, std::path::MAIN_SEPARATOR, directory, std::path::MAIN_SEPARATOR);
+        create_dir(file_output_path);
+
         match ext.to_ascii_lowercase().as_str() {
             "jpg" | "jpeg" => {
-                result = dyn_img.to_rgb8()
-                    .save(format!("{}_R.{}", path, ext));
+                result = dyn_img.to_rgb8().save(format!("{}{}.{}", file_output_path, file_name, ext));
             },
             "png" | "webp" | "avif" => {
-                result = dyn_img.to_rgba8()
-                    .save(format!("{}_R.{}", path, ext));
+                result = dyn_img.to_rgba8().save(format!("{}{}.{}", file_output_path, file_name, ext));
             },
-            _ => {
-                eprintln!("extension {} not supported", ext)
-            }
+            _ => eprintln!("extension {} not supported", ext)
         }
 
         if result.is_err() {
@@ -147,14 +153,15 @@ fn save_image(image: ImageBuffer<Rgba<u8>, Vec<u8>>, path: String) {
     }
 }
 
-fn pre_process_originals(image_paths: Vec<String>) {
+fn pre_process_originals(image_paths: Vec<String>, output_directory: &str) {
     for image_path in image_paths {
         let rotated_image_option = fix_rotation(
             format!("{}", image_path).as_str()
         );
 
+        // TODO: enable again after debugging
         match rotated_image_option {
-            Some(image) => save_image(image, image_path),
+            Some(image) => save_image(image, image_path, output_directory),
             None => eprintln!("rotating image failed, skipping")
         }
     }
@@ -170,19 +177,20 @@ fn main() {
         return;
     }
 
-    let directory = &args[1];
+    let input_directory = &args[1];
+    let output_directory = "output";
     let dest_file = "images.zip";
 
-    let original_images = get_image_paths(directory);
+    let original_images = get_image_paths(input_directory);
 
     println!("{:?}", original_images);
 
-    pre_process_originals(original_images);
+    pre_process_originals(original_images, output_directory);
 
     // let images = gather_image_paths(directory);
     // process_files(images);
 
-    match zip_directory(directory, dest_file) {
+    match zip_directory(input_directory, dest_file) {
         Ok(_) => println!("Zipped directory successfully."),
         Err(e) => eprintln!("Error zipping directory: {}", e),
     }
