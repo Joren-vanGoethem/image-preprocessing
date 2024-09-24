@@ -6,14 +6,14 @@ use image::imageops::{resize, FilterType};
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use std::ffi::OsStr;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, MAIN_SEPARATOR};
 use std::{env, fs, io};
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod::Stored;
 use zip::ZipWriter;
 
-const QUALITY_PRESETS: [u16; 7] = [20, 200, 400, 600, 800, 1000, 1200];
+const QUALITY_PRESETS: [u32; 7] = [20, 200, 400, 600, 800, 1000, 1200];
 
 fn zip_directory(src_dir: &str, dest_file: &str) -> io::Result<()> {
     let path = Path::new(src_dir);
@@ -44,10 +44,6 @@ fn zip_directory(src_dir: &str, dest_file: &str) -> io::Result<()> {
     }
     zip.finish()?;
     Ok(())
-}
-
-fn resize_image(image: &DynamicImage, width: u32, height: u32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-    resize(image, width, height, FilterType::CatmullRom)
 }
 
 fn is_supported_extension(extension_str: &str) -> bool {
@@ -91,7 +87,6 @@ fn get_image_paths(dir: &str) -> Vec<String> {
             }
         } else if let Some(extension_str) = path.extension().and_then(OsStr::to_str) {
             if is_supported_extension(extension_str) {
-                // TODO: are these checks actually useful? we read files from filesystem, i expect them to be valid file names
                 file_paths.push(path.to_str().unwrap().to_string());
             }
         }
@@ -106,11 +101,7 @@ fn create_dir(dir: &String) {
     }
 }
 
-fn save_image(
-    image: ImageBuffer<Rgba<u8>, Vec<u8>>,
-    original_file_path: String,
-    output_directory: &str,
-) {
+fn save_image(image: ImageBuffer<Rgba<u8>, Vec<u8>>, original_file_path: &str, output_directory: &str, ) {
     // TODO: cleanup this mess
     let system_path = Path::new(&original_file_path);
     let extension = system_path.extension().and_then(OsStr::to_str);
@@ -123,21 +114,13 @@ fn save_image(
         .unwrap()
         .1;
 
-    println!("file_name: {file_name:?}");
-    println!("extension: {extension:?}");
-    println!("directory: {directory:?}");
-
     let dyn_img = DynamicImage::ImageRgba8(image);
 
     if let Some(ext) = extension {
         let mut result = Ok(());
 
         let file_output_path = &format!(
-            "{}{}{}{}",
-            output_directory,
-            std::path::MAIN_SEPARATOR,
-            directory,
-            std::path::MAIN_SEPARATOR
+            "{output_directory}{MAIN_SEPARATOR}{directory}{MAIN_SEPARATOR}"
         );
         create_dir(file_output_path);
 
@@ -161,15 +144,31 @@ fn save_image(
     }
 }
 
-fn pre_process_originals(image_paths: Vec<String>, output_directory: &str) {
+fn pre_process_originals(image_paths: &Vec<String>, output_directory: &str) {
     for image_path in image_paths {
         let rotated_image_option = fix_rotation(format!("{image_path}").as_str());
 
-        // TODO: enable again after debugging
         match rotated_image_option {
             Some(image) => save_image(image, image_path, output_directory),
             None => eprintln!("rotating image failed, skipping"),
         }
+    }
+}
+
+fn calculate_new_height(image: &DynamicImage, new_width: u32) -> u32 {
+    let (orig_width, orig_height) = image.dimensions();
+
+    let aspect_ratio = orig_width as f64 / orig_height as f64;
+    (new_width as f64 / aspect_ratio).round() as u32
+}
+
+fn scale_images(size: u32, output_directory: &str, images: &Vec<String>) {
+    let output_dir = format!("{output_directory}{MAIN_SEPARATOR}{size}");
+    for image in images {
+        let dyn_img = image::open(image).expect("unable to read image");
+        let new_height = calculate_new_height(&dyn_img, size);
+        let resized = dyn_img.resize(size, new_height, FilterType::Gaussian);
+        save_image(resized.to_rgba8(), image, &output_dir);
     }
 }
 
@@ -187,14 +186,16 @@ fn main() {
     let output_directory = "output";
     let dest_file = "images.zip";
 
-    let original_images = get_image_paths(input_directory);
+    let original_image_paths = get_image_paths(input_directory);
+    pre_process_originals(&original_image_paths, output_directory);
 
-    println!("{:?}", original_images);
-
-    pre_process_originals(original_images, output_directory);
+    let pre_processed_image_paths = get_image_paths(output_directory);
 
     // let images = gather_image_paths(directory);
     // process_files(images);
+    for size in QUALITY_PRESETS {
+        scale_images(size, output_directory, &pre_processed_image_paths);
+    }
 
     match zip_directory(input_directory, dest_file) {
         Ok(_) => println!("Zipped directory successfully."),
