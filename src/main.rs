@@ -2,7 +2,7 @@ mod exif_rotation;
 mod image_buffer_conversions;
 
 use crate::exif_rotation::fix_rotation;
-use image::imageops::{resize, FilterType};
+use image::imageops::{FilterType};
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use std::ffi::OsStr;
 use std::fs::File;
@@ -47,13 +47,13 @@ fn zip_directory(src_dir: &str, dest_file: &str) -> io::Result<()> {
 }
 
 fn is_supported_extension(extension_str: &str) -> bool {
-    // TODO: check if exists in string array, cleaner solution
+    // TODO: check support for avif and gif
     extension_str.eq_ignore_ascii_case("jpg")
         || extension_str.eq_ignore_ascii_case("jpeg")
         || extension_str.eq_ignore_ascii_case("png")
-        || extension_str.eq_ignore_ascii_case("gif")
+        // || extension_str.eq_ignore_ascii_case("gif")
         || extension_str.eq_ignore_ascii_case("webp")
-        || extension_str.eq_ignore_ascii_case("avif")
+        // || extension_str.eq_ignore_ascii_case("avif")
 }
 
 fn get_image_paths(dir: &str) -> Vec<String> {
@@ -167,7 +167,7 @@ fn scale_images(size: u32, output_directory: &str, images: &Vec<String>) {
     for image in images {
         let dyn_img = image::open(image).expect("unable to read image");
         let new_height = calculate_new_height(&dyn_img, size);
-        let resized = dyn_img.resize(size, new_height, FilterType::Gaussian);
+        let resized = dyn_img.resize(size, new_height, FilterType::Triangle);
         save_image(resized.to_rgba8(), image, &output_dir);
     }
 }
